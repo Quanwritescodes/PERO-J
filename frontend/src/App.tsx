@@ -24,6 +24,7 @@ function App() {
           <a href="#events">Events</a>
           <a href="#contracts">Contracts</a>
           <a href="#ledgers">Ledgers</a>
+          <a href="#oracle">Oracle</a>
         </nav>
       </header>
       <main className="app-main">
