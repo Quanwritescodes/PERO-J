@@ -126,6 +126,68 @@ const migrations = [
       ALTER TABLE events ADD COLUMN IF NOT EXISTS sac_asset TEXT;
     `,
   },
+  {
+    id: 7,
+    name: "create_user_balances_and_claims",
+    sql: `
+      CREATE TABLE IF NOT EXISTS user_balances (
+        address       TEXT NOT NULL,
+        contract_id   TEXT NOT NULL,
+        balance       NUMERIC NOT NULL DEFAULT 0,
+        updated_at    TIMESTAMPTZ DEFAULT NOW(),
+        PRIMARY KEY (address, contract_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_user_balances_address ON user_balances(address);
+      CREATE INDEX IF NOT EXISTS idx_user_balances_contract ON user_balances(contract_id);
+
+      CREATE TABLE IF NOT EXISTS claims (
+        id            BIGSERIAL PRIMARY KEY,
+        address       TEXT NOT NULL,
+        contract_id   TEXT NOT NULL,
+        market_id     TEXT,
+        amount        NUMERIC NOT NULL,
+        status        TEXT NOT NULL DEFAULT 'pending',
+        event_seq     BIGINT,
+        ledger        BIGINT NOT NULL,
+        tx_hash       TEXT,
+        created_at    TIMESTAMPTZ DEFAULT NOW(),
+        updated_at    TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_claims_address ON claims(address);
+      CREATE INDEX IF NOT EXISTS idx_claims_contract ON claims(contract_id);
+      CREATE INDEX IF NOT EXISTS idx_claims_status ON claims(status);
+      CREATE INDEX IF NOT EXISTS idx_claims_market_id ON claims(market_id);
+
+      CREATE TABLE IF NOT EXISTS fees (
+        id            BIGSERIAL PRIMARY KEY,
+        address       TEXT NOT NULL,
+        contract_id   TEXT NOT NULL,
+        fee_type      TEXT NOT NULL,
+        amount        NUMERIC NOT NULL,
+        event_seq     BIGINT,
+        ledger        BIGINT NOT NULL,
+        tx_hash       TEXT,
+        created_at    TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_fees_address ON fees(address);
+      CREATE INDEX IF NOT EXISTS idx_fees_contract ON fees(contract_id);
+      CREATE INDEX IF NOT EXISTS idx_fees_type ON fees(fee_type);
+
+      CREATE TABLE IF NOT EXISTS rewards (
+        id            BIGSERIAL PRIMARY KEY,
+        address       TEXT NOT NULL,
+        contract_id   TEXT NOT NULL,
+        points        NUMERIC NOT NULL,
+        reason        TEXT,
+        event_seq     BIGINT,
+        ledger        BIGINT NOT NULL,
+        tx_hash       TEXT,
+        created_at    TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_rewards_address ON rewards(address);
+      CREATE INDEX IF NOT EXISTS idx_rewards_contract ON rewards(contract_id);
+    `,
+  },
 ];
 
 process.on("unhandledRejection", async (err) => {
@@ -552,5 +614,235 @@ export const db = {
       [String(ledger)]
     );
   },
+
+  /**
+   * Update a user's balance for a specific contract.
+   * Creates a new record if it doesn't exist, otherwise updates the balance.
+   * Uses pool.query — safe to call outside of init().
+   *
+   * @param {string} address - User's Stellar address
+   * @param {string} contractId - Contract address
+   * @param {string|number} balance - New balance amount
+   * @returns {Promise<void>}
+   */
+  async upsertUserBalance(address, contractId, balance) {
+    await pool.query(
+      `INSERT INTO user_balances (address, contract_id, balance, updated_at)
+       VALUES ($1, $2, $3, NOW())
+       ON CONFLICT (address, contract_id)
+       DO UPDATE SET balance = $3, updated_at = NOW()`,
+      [address, contractId, String(balance)]
+    );
+  },
+
+  /**
+   * Get a user's balance for a specific contract.
+   * Uses pool.query — safe to call outside of init().
+   *
+   * @param {string} address - User's Stellar address
+   * @param {string} contractId - Contract address
+   * @returns {Promise<string|null>} The balance as a string, or null if not found
+   */
+  async getUserBalance(address, contractId) {
+    const { rows } = await pool.query(
+      "SELECT balance FROM user_balances WHERE address = $1 AND contract_id = $2",
+      [address, contractId]
+    );
+    return rows[0]?.balance ?? null;
+  },
+
+  /**
+   * Record a claim event.
+   * Uses pool.query — safe to call outside of init().
+   *
+   * @param {object} claim
+   * @param {string} claim.address - User's Stellar address
+   * @param {string} claim.contractId - Contract address
+   * @param {string} [claim.marketId] - Optional market identifier
+   * @param {string|number} claim.amount - Claim amount
+   * @param {string} [claim.status='completed'] - Claim status
+   * @param {number} [claim.eventSeq] - Associated event sequence number
+   * @param {number} claim.ledger - Ledger number
+   * @param {string} [claim.txHash] - Transaction hash
+   * @returns {Promise<number>} The inserted claim id
+   */
+  async insertClaim({ address, contractId, marketId, amount, status = 'completed', eventSeq, ledger, txHash }) {
+    const { rows } = await pool.query(
+      `INSERT INTO claims (address, contract_id, market_id, amount, status, event_seq, ledger, tx_hash, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
+       RETURNING id`,
+      [address, contractId, marketId ?? null, String(amount), status, eventSeq ?? null, ledger, txHash ?? null]
+    );
+    return rows[0].id;
+  },
+
+  /**
+   * Update the status of a claim.
+   * Uses pool.query — safe to call outside of init().
+   *
+   * @param {number} claimId - The claim id
+   * @param {string} status - New status
+   * @returns {Promise<void>}
+   */
+  async updateClaimStatus(claimId, status) {
+    await pool.query(
+      "UPDATE claims SET status = $1, updated_at = NOW() WHERE id = $2",
+      [status, claimId]
+    );
+  },
+
+  /**
+   * Get claims for a specific address.
+   * Uses pool.query — safe to call outside of init().
+   *
+   * @param {string} address - User's Stellar address
+   * @param {object} [opts]
+   * @param {number} [opts.page=1] - Page number
+   * @param {number} [opts.limit=25] - Results per page
+   * @returns {Promise<{ claims: Array, total: number, page: number, limit: number }>}
+   */
+  async getClaims(address, { page = 1, limit = 25 } = {}) {
+    const pageNum = Number(page) || 1;
+    const limitNum = Math.min(MAX_PAGE, Number(limit) || 25);
+    const offset = (pageNum - 1) * limitNum;
+
+    const countRes = await pool.query(
+      "SELECT COUNT(*) FROM claims WHERE address = $1",
+      [address]
+    );
+    const total = parseInt(countRes.rows[0].count, 10);
+
+    const { rows } = await pool.query(
+      "SELECT * FROM claims WHERE address = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3",
+      [address, limitNum, offset]
+    );
+
+    return { claims: rows, total, page: pageNum, limit: limitNum };
+  },
+
+  /**
+   * Record a fee withdrawal event.
+   * Uses pool.query — safe to call outside of init().
+   *
+   * @param {object} fee
+   * @param {string} fee.address - User's Stellar address
+   * @param {string} fee.contractId - Contract address
+   * @param {string} fee.feeType - Type of fee (e.g., 'protocol', 'withdraw', 'trade')
+   * @param {string|number} fee.amount - Fee amount
+   * @param {number} [fee.eventSeq] - Associated event sequence number
+   * @param {number} fee.ledger - Ledger number
+   * @param {string} [fee.txHash] - Transaction hash
+   * @returns {Promise<number>} The inserted fee id
+   */
+  async insertFee({ address, contractId, feeType, amount, eventSeq, ledger, txHash }) {
+    const { rows } = await pool.query(
+      `INSERT INTO fees (address, contract_id, fee_type, amount, event_seq, ledger, tx_hash, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+       RETURNING id`,
+      [address, contractId, feeType, String(amount), eventSeq ?? null, ledger, txHash ?? null]
+    );
+    return rows[0].id;
+  },
+
+  /**
+   * Get fees for a specific address.
+   * Uses pool.query — safe to call outside of init().
+   *
+   * @param {string} address - User's Stellar address
+   * @param {object} [opts]
+   * @param {number} [opts.page=1] - Page number
+   * @param {number} [opts.limit=25] - Results per page
+   * @returns {Promise<{ fees: Array, total: number, page: number, limit: number }>}
+   */
+  async getFees(address, { page = 1, limit = 25 } = {}) {
+    const pageNum = Number(page) || 1;
+    const limitNum = Math.min(MAX_PAGE, Number(limit) || 25);
+    const offset = (pageNum - 1) * limitNum;
+
+    const countRes = await pool.query(
+      "SELECT COUNT(*) FROM fees WHERE address = $1",
+      [address]
+    );
+    const total = parseInt(countRes.rows[0].count, 10);
+
+    const { rows } = await pool.query(
+      "SELECT * FROM fees WHERE address = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3",
+      [address, limitNum, offset]
+    );
+
+    return { fees: rows, total, page: pageNum, limit: limitNum };
+  },
+
+  /**
+   * Record a reward points event.
+   * Uses pool.query — safe to call outside of init().
+   *
+   * @param {object} reward
+   * @param {string} reward.address - User's Stellar address
+   * @param {string} reward.contractId - Contract address
+   * @param {string|number} reward.points - Reward points amount
+   * @param {string} [reward.reason] - Reason for reward
+   * @param {number} [reward.eventSeq] - Associated event sequence number
+   * @param {number} reward.ledger - Ledger number
+   * @param {string} [reward.txHash] - Transaction hash
+   * @returns {Promise<number>} The inserted reward id
+   */
+  async insertReward({ address, contractId, points, reason, eventSeq, ledger, txHash }) {
+    const { rows } = await pool.query(
+      `INSERT INTO rewards (address, contract_id, points, reason, event_seq, ledger, tx_hash, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+       RETURNING id`,
+      [address, contractId, String(points), reason ?? null, eventSeq ?? null, ledger, txHash ?? null]
+    );
+    return rows[0].id;
+  },
+
+  /**
+   * Get rewards for a specific address.
+   * Uses pool.query — safe to call outside of init().
+   *
+   * @param {string} address - User's Stellar address
+   * @param {object} [opts]
+   * @param {number} [opts.page=1] - Page number
+   * @param {number} [opts.limit=25] - Results per page
+   * @returns {Promise<{ rewards: Array, total: number, page: number, limit: number }>}
+   */
+  async getRewards(address, { page = 1, limit = 25 } = {}) {
+    const pageNum = Number(page) || 1;
+    const limitNum = Math.min(MAX_PAGE, Number(limit) || 25);
+    const offset = (pageNum - 1) * limitNum;
+
+    const countRes = await pool.query(
+      "SELECT COUNT(*) FROM rewards WHERE address = $1",
+      [address]
+    );
+    const total = parseInt(countRes.rows[0].count, 10);
+
+    const { rows } = await pool.query(
+      "SELECT * FROM rewards WHERE address = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3",
+      [address, limitNum, offset]
+    );
+
+    return { rewards: rows, total, page: pageNum, limit: limitNum };
+  },
+
+  /**
+   * Get total reward points for an address and contract.
+   * Uses pool.query — safe to call outside of init().
+   *
+   * @param {string} address - User's Stellar address
+   * @param {string} contractId - Contract address
+   * @returns {Promise<string>} Total points as a string
+   */
+  async getTotalRewardPoints(address, contractId) {
+    const { rows } = await pool.query(
+      `SELECT COALESCE(SUM(points), 0)::TEXT as total
+       FROM rewards
+       WHERE address = $1 AND contract_id = $2`,
+      [address, contractId]
+    );
+    return rows[0]?.total ?? "0";
+  },
 };
+
 

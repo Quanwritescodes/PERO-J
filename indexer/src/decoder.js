@@ -190,6 +190,24 @@ function buildDescription(fn, args, data, contractName) {
       const [from, amount, token] = args;
       return `Address ${fmt(from)} withdrew ${amount} ${token ?? ""} from ${contractName}`;
     }
+    case "claim": {
+      const [user, marketId] = args;
+      const amount = typeof data === "object" ? data?.amount : data;
+      const marketStr = marketId ? ` from market ${fmt(marketId)}` : "";
+      return `Address ${fmt(user)} claimed ${amount ?? "payout"}${marketStr} on ${contractName}`;
+    }
+    case "fee_withdrawn": {
+      const [user, feeType] = args;
+      const amount = typeof data === "object" ? data?.amount : data;
+      const typeStr = feeType ? ` (${feeType})` : "";
+      return `Address ${fmt(user)} withdrew ${amount ?? "fee"}${typeStr} from ${contractName}`;
+    }
+    case "reward_points": {
+      const [user, reason] = args;
+      const points = typeof data === "object" ? data?.points ?? data?.amount : data;
+      const reasonStr = reason ? ` for ${reason}` : "";
+      return `Address ${fmt(user)} earned ${points ?? "reward"} points${reasonStr} on ${contractName}`;
+    }
     default:
       return genericDescription(fn, args, data, contractName);
   }

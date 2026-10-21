@@ -8,6 +8,7 @@ import { reloadSacMap } from "./sac.js";
 import { validateNetwork } from "./validateNetwork.js";
 import { submitEvent } from "./contract.js";
 import { resolvePollMs } from "./resolvePollMs.js";
+import { handleClaim, handleFeeWithdrawn, handleRewardPoints } from "./handlers/index.js";
 
 dotenv.config();
 
@@ -115,6 +116,27 @@ export async function indexLedger(ledger, rpcClient = rpc) {
     }
     await db.upsertEvent(decoded);
     console.log(`[${ev.ledger}] ${decoded.function}: ${decoded.description}`);
+
+    // Invoke registered handlers for specific event types
+    try {
+      switch (decoded.function) {
+        case "claim":
+          await handleClaim(decoded);
+          break;
+        case "fee_withdrawn":
+          await handleFeeWithdrawn(decoded);
+          break;
+        case "reward_points":
+          await handleRewardPoints(decoded);
+          break;
+      }
+    } catch (handlerErr) {
+      // Log handler errors but don't stop indexing
+      console.error(
+        `[indexLedger] Handler error for ${decoded.function} at seq=${decoded.seq}:`,
+        handlerErr.message
+      );
+    }
   }
 
   // Record the time we finished processing this ledger batch
