@@ -126,6 +126,27 @@ const migrations = [
       ALTER TABLE events ADD COLUMN IF NOT EXISTS sac_asset TEXT;
     `,
   },
+  {
+    id: 7,
+    name: "create_dispute_votes_table",
+    sql: `
+      CREATE TABLE IF NOT EXISTS dispute_votes (
+        id          TEXT PRIMARY KEY,
+        dispute_id  BIGINT NOT NULL,
+        juror       TEXT NOT NULL,
+        vote        TEXT NOT NULL,
+        stake       BIGINT NOT NULL DEFAULT 0,
+        reward      BIGINT NOT NULL DEFAULT 0,
+        tx_hash     TEXT,
+        rationale   TEXT,
+        created_at  TIMESTAMPTZ DEFAULT NOW(),
+        CONSTRAINT uq_dispute_juror UNIQUE (dispute_id, juror)
+      );
+      CREATE INDEX IF NOT EXISTS idx_dispute_votes_dispute_id ON dispute_votes(dispute_id);
+      CREATE INDEX IF NOT EXISTS idx_dispute_votes_juror ON dispute_votes(juror);
+      CREATE INDEX IF NOT EXISTS idx_dispute_votes_dispute_vote ON dispute_votes(dispute_id, vote);
+    `,
+  },
 ];
 
 process.on("unhandledRejection", async (err) => {
@@ -551,6 +572,48 @@ export const db = {
        ON CONFLICT (key) DO UPDATE SET value = $1`,
       [String(ledger)]
     );
+  },
+
+  /**
+   * Record a juror's dispute vote.
+   */
+  async insertDisputeVote(vote) {
+    const { id, dispute_id, juror, vote: choice, stake = 0, reward = 0, tx_hash = null, rationale = null } = vote;
+    await pool.query(
+      `INSERT INTO dispute_votes (id, dispute_id, juror, vote, stake, reward, tx_hash, rationale)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       ON CONFLICT (dispute_id, juror) DO UPDATE SET vote = $4, stake = $5, reward = $6, tx_hash = $7, rationale = $8`,
+      [id, dispute_id, juror, choice, stake, reward, tx_hash, rationale]
+    );
+  },
+
+  /**
+   * Query dispute votes for a given dispute.
+   */
+  async getDisputeVotes(disputeId) {
+    const { rows } = await pool.query(
+      `SELECT * FROM dispute_votes WHERE dispute_id = $1 ORDER BY created_at ASC`,
+      [disputeId]
+    );
+    return rows;
+  },
+
+  /**
+   * Efficiently aggregate dispute votes (counts, stake totals, outcomes).
+   */
+  async aggregateDisputeVotes(disputeId) {
+    const { rows } = await pool.query(
+      `SELECT
+         vote,
+         COUNT(*)::INTEGER AS count,
+         COALESCE(SUM(stake), 0)::BIGINT AS total_stake,
+         COALESCE(SUM(reward), 0)::BIGINT AS total_reward
+       FROM dispute_votes
+       WHERE dispute_id = $1
+       GROUP BY vote`,
+      [disputeId]
+    );
+    return rows;
   },
 };
 
