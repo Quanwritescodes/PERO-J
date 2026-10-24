@@ -1013,6 +1013,8 @@ Issue [#118](../../issues/118) — Contract admin key management
 
 ### Documentation
 
+- Auto-update CHANGELOG.md [skip ci] ([`defb4ce`](../../commit/defb4cef31cd42145306fb563d280767422117c4))
+
 - Auto-update CHANGELOG.md [skip ci] ([`69c3c67`](../../commit/69c3c6704120dcb838402b0c4d8d7027a9a9004b))
 
 - Auto-update CHANGELOG.md [skip ci] ([`1ce17cb`](../../commit/1ce17cb5d0ae11f1f73526c883b9d464f7db70c8))
@@ -1913,6 +1915,11 @@ Closes [#3](../../issues/3) — Parse ScVal Types to Native JavaScript Types
   - Set NODE_ENV=production in Makefile indexer target to enable production
     optimizations in pino, express, and other Node.js libraries
 
+
+
+### Performance
+
+- Eliminate polling latency with push-based market streaming ([`98e9a8e`](../../commit/98e9a8e3f5a7f18333f445c12b1e8bca01301281))
 
 
 ### Refactoring
