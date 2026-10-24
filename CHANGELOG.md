@@ -1013,6 +1013,8 @@ Issue [#118](../../issues/118) — Contract admin key management
 
 ### Documentation
 
+- Auto-update CHANGELOG.md [skip ci] ([`bd9e6f6`](../../commit/bd9e6f6ae1e2344c9ef40279b9aa8acdfda9da3c))
+
 - Auto-update CHANGELOG.md [skip ci] ([`d9e81b7`](../../commit/d9e81b717920fa6b7a26e3be93d0f35634c989a8))
 
 - Add public documentation for bond deposits, challenge windows, and slashing rules ([`d507fab`](../../commit/d507fabc7c2934c636eb22a1731e4d0a90370f41))
@@ -1554,6 +1556,8 @@ Add hourly quorum checks and PagerDuty escalation at 24h, 48h, and 60h. Resolve 
 - Add oracle disputes endpoint ([`d7b3067`](../../commit/d7b3067a32c7983a079111764ecf94bb175e1773))
 
 - Add dedicated dispute_votes table and aggregation queries ([`3c0cebd`](../../commit/3c0cebd713b5220ac364ff611849691170d28dfe))
+
+- Add oracle submitter portal and participation interface ([`4d1c395`](../../commit/4d1c395eedb2ff37ed616c6b8a21e582911020c3))
 
 - Configure database pool size ([`df7e5bb`](../../commit/df7e5bbd7b70c022f583f715bd716993b77d7f55))
 
