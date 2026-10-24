@@ -502,3 +502,11 @@ PRs welcome. Please open an issue first for large changes.
 
 <!-- handsoff-issue-745 -->
 - #745: `init()` must be permanently irreversible after first call
+
+---
+
+## Documentation
+
+- [REST API Reference](docs/rest-api.md)
+- [Register Contract Guide](docs/register-contract.md)
+- [Bonds, Challenge Windows & Slashing Rules](docs/bonds-challenge-slashing.md)
