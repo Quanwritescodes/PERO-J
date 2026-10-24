@@ -289,6 +289,40 @@ export function createApp() {
     });
   });
 
+
+  // GET /api/markets/stream - Server-Sent Events endpoint for real-time market updates
+  // Eliminates 3-5 second polling latency and conserves bandwidth on static markets
+  app.get("/api/markets/stream", (req, res) => {
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+    res.flushHeaders?.();
+
+    const targetContract = req.query.contract ? String(req.query.contract).trim() : null;
+
+    // Send initial connection ack
+    res.write(`data: ${JSON.stringify({ type: "connected", timestamp: Date.now() })}\n\n`);
+
+    const onMarketUpdate = (update) => {
+      if (targetContract && update.contractId && update.contractId !== targetContract) {
+        return;
+      }
+      res.write(`data: ${JSON.stringify(update)}\n\n`);
+    };
+
+    // Heartbeat to keep connection alive without pushing redundant static market data
+    const heartbeatTimer = setInterval(() => {
+      res.write(": keepalive\n\n");
+    }, 15000);
+
+    eventEmitter.on("market_update", onMarketUpdate);
+
+    res.on("close", () => {
+      clearInterval(heartbeatTimer);
+      eventEmitter.off("market_update", onMarketUpdate);
+    });
+  });
   // GET /api/events/:seq/raw — raw un-decoded topics and data for a single event.
   // Must be registered BEFORE /api/events/:seq so Express doesn't consume "raw"
   // as the :seq parameter.

@@ -260,6 +260,44 @@ export function streamEvents(
   };
 }
 
+
+export interface MarketUpdate {
+  contractId?: string;
+  type: string;
+  data?: Record<string, unknown>;
+  timestamp?: number;
+}
+
+/**
+ * Connect to the Server-Sent Events stream for real-time market updates.
+ * Eliminates 3-5s polling latency and saves bandwidth on static markets.
+ */
+export function streamMarketUpdates(
+  contractId: string | undefined,
+  onUpdate: (update: MarketUpdate) => void,
+  onError?: (err: Event) => void
+): () => void {
+  const q = contractId ? `?contract=${encodeURIComponent(contractId)}` : "";
+  const url = `${BASE}/markets/stream${q}`;
+  const eventSource = new EventSource(url);
+
+  eventSource.onmessage = (e) => {
+    try {
+      const data: MarketUpdate = JSON.parse(e.data);
+      onUpdate(data);
+    } catch (err) {
+      console.error("Failed to parse market update SSE frame:", err);
+    }
+  };
+
+  if (onError) {
+    eventSource.onerror = onError;
+  }
+
+  return () => {
+    eventSource.close();
+  };
+}
 export const api = {
   distinctFunctions: () => get<string[]>("/functions"),
   events: (params: { contract?: string; fn?: string; q?: string; page?: number }) => {
@@ -288,4 +326,5 @@ export const api = {
   dispute:          (marketId: string)                    =>
     resilientGet<DisputeDetail>(`/disputes/${marketId}`, () => fetchOnChainDispute(marketId)),
   streamEvents,
+  streamMarketUpdates,
 };
