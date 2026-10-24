@@ -1013,6 +1013,10 @@ Issue [#118](../../issues/118) — Contract admin key management
 
 ### Documentation
 
+- Add public documentation for bond deposits, challenge windows, and slashing rules ([`d507fab`](../../commit/d507fabc7c2934c636eb22a1731e4d0a90370f41))
+
+- Auto-update CHANGELOG.md [skip ci] ([`07fe28e`](../../commit/07fe28e47c9502a0caba157cf0b130ecce748283))
+
 - Auto-update CHANGELOG.md [skip ci] ([`f3c9872`](../../commit/f3c98723126b98f9bea71de5a7d3f4209c061e2b))
 
 - Auto-update CHANGELOG.md [skip ci] ([`12ebff1`](../../commit/12ebff19105220c7724abb8d8567796784d54021))
