@@ -190,23 +190,17 @@ function buildDescription(fn, args, data, contractName) {
       const [from, amount, token] = args;
       return `Address ${fmt(from)} withdrew ${amount} ${token ?? ""} from ${contractName}`;
     }
-    case "claim": {
-      const [user, marketId] = args;
-      const amount = typeof data === "object" ? data?.amount : data;
-      const marketStr = marketId ? ` from market ${fmt(marketId)}` : "";
-      return `Address ${fmt(user)} claimed ${amount ?? "payout"}${marketStr} on ${contractName}`;
+    case "oracle_submission": {
+      const [marketId, submitter, outcome] = args;
+      return `Oracle ${fmt(submitter)} submitted outcome "${outcome}" for market ${marketId} on ${contractName}`;
     }
-    case "fee_withdrawn": {
-      const [user, feeType] = args;
-      const amount = typeof data === "object" ? data?.amount : data;
-      const typeStr = feeType ? ` (${feeType})` : "";
-      return `Address ${fmt(user)} withdrew ${amount ?? "fee"}${typeStr} from ${contractName}`;
+    case "oracle_dispute": {
+      const [marketId, disputer] = args;
+      return `Address ${fmt(disputer)} disputed oracle submission for market ${marketId} on ${contractName}`;
     }
-    case "reward_points": {
-      const [user, reason] = args;
-      const points = typeof data === "object" ? data?.points ?? data?.amount : data;
-      const reasonStr = reason ? ` for ${reason}` : "";
-      return `Address ${fmt(user)} earned ${points ?? "reward"} points${reasonStr} on ${contractName}`;
+    case "oracle_finalized": {
+      const [marketId, finalOutcome] = args;
+      return `Oracle finalized market ${marketId} with outcome "${finalOutcome}" on ${contractName}`;
     }
     default:
       return genericDescription(fn, args, data, contractName);

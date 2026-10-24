@@ -128,64 +128,47 @@ const migrations = [
   },
   {
     id: 7,
-    name: "create_user_balances_and_claims",
+    name: "create_oracle_and_markets_tables",
     sql: `
-      CREATE TABLE IF NOT EXISTS user_balances (
-        address       TEXT NOT NULL,
-        contract_id   TEXT NOT NULL,
-        balance       NUMERIC NOT NULL DEFAULT 0,
-        updated_at    TIMESTAMPTZ DEFAULT NOW(),
-        PRIMARY KEY (address, contract_id)
+      CREATE TABLE IF NOT EXISTS markets (
+        id              TEXT PRIMARY KEY,
+        contract_id     TEXT NOT NULL,
+        oracle_state    TEXT NOT NULL DEFAULT 'pending',
+        outcome         TEXT,
+        created_at      TIMESTAMPTZ DEFAULT NOW(),
+        updated_at      TIMESTAMPTZ DEFAULT NOW()
       );
-      CREATE INDEX IF NOT EXISTS idx_user_balances_address ON user_balances(address);
-      CREATE INDEX IF NOT EXISTS idx_user_balances_contract ON user_balances(contract_id);
+      CREATE INDEX IF NOT EXISTS idx_markets_contract ON markets(contract_id);
+      CREATE INDEX IF NOT EXISTS idx_markets_oracle_state ON markets(oracle_state);
 
-      CREATE TABLE IF NOT EXISTS claims (
-        id            BIGSERIAL PRIMARY KEY,
-        address       TEXT NOT NULL,
-        contract_id   TEXT NOT NULL,
-        market_id     TEXT,
-        amount        NUMERIC NOT NULL,
-        status        TEXT NOT NULL DEFAULT 'pending',
-        event_seq     BIGINT,
-        ledger        BIGINT NOT NULL,
-        tx_hash       TEXT,
-        created_at    TIMESTAMPTZ DEFAULT NOW(),
-        updated_at    TIMESTAMPTZ DEFAULT NOW()
+      CREATE TABLE IF NOT EXISTS oracle_submissions (
+        id              BIGSERIAL PRIMARY KEY,
+        market_id       TEXT NOT NULL,
+        submitter       TEXT NOT NULL,
+        outcome         TEXT NOT NULL,
+        ledger          BIGINT NOT NULL,
+        tx_hash         TEXT,
+        timestamp       TIMESTAMPTZ DEFAULT NOW(),
+        status          TEXT NOT NULL DEFAULT 'pending',
+        created_at      TIMESTAMPTZ DEFAULT NOW()
       );
-      CREATE INDEX IF NOT EXISTS idx_claims_address ON claims(address);
-      CREATE INDEX IF NOT EXISTS idx_claims_contract ON claims(contract_id);
-      CREATE INDEX IF NOT EXISTS idx_claims_status ON claims(status);
-      CREATE INDEX IF NOT EXISTS idx_claims_market_id ON claims(market_id);
+      CREATE INDEX IF NOT EXISTS idx_oracle_submissions_market ON oracle_submissions(market_id);
+      CREATE INDEX IF NOT EXISTS idx_oracle_submissions_status ON oracle_submissions(status);
+      CREATE INDEX IF NOT EXISTS idx_oracle_submissions_ledger ON oracle_submissions(ledger);
 
-      CREATE TABLE IF NOT EXISTS fees (
-        id            BIGSERIAL PRIMARY KEY,
-        address       TEXT NOT NULL,
-        contract_id   TEXT NOT NULL,
-        fee_type      TEXT NOT NULL,
-        amount        NUMERIC NOT NULL,
-        event_seq     BIGINT,
-        ledger        BIGINT NOT NULL,
-        tx_hash       TEXT,
-        created_at    TIMESTAMPTZ DEFAULT NOW()
+      CREATE TABLE IF NOT EXISTS oracle_disputes (
+        id              BIGSERIAL PRIMARY KEY,
+        submission_id   BIGINT NOT NULL REFERENCES oracle_submissions(id),
+        market_id       TEXT NOT NULL,
+        disputer        TEXT NOT NULL,
+        reason          TEXT,
+        ledger          BIGINT NOT NULL,
+        tx_hash         TEXT,
+        timestamp       TIMESTAMPTZ DEFAULT NOW(),
+        created_at      TIMESTAMPTZ DEFAULT NOW()
       );
-      CREATE INDEX IF NOT EXISTS idx_fees_address ON fees(address);
-      CREATE INDEX IF NOT EXISTS idx_fees_contract ON fees(contract_id);
-      CREATE INDEX IF NOT EXISTS idx_fees_type ON fees(fee_type);
-
-      CREATE TABLE IF NOT EXISTS rewards (
-        id            BIGSERIAL PRIMARY KEY,
-        address       TEXT NOT NULL,
-        contract_id   TEXT NOT NULL,
-        points        NUMERIC NOT NULL,
-        reason        TEXT,
-        event_seq     BIGINT,
-        ledger        BIGINT NOT NULL,
-        tx_hash       TEXT,
-        created_at    TIMESTAMPTZ DEFAULT NOW()
-      );
-      CREATE INDEX IF NOT EXISTS idx_rewards_address ON rewards(address);
-      CREATE INDEX IF NOT EXISTS idx_rewards_contract ON rewards(contract_id);
+      CREATE INDEX IF NOT EXISTS idx_oracle_disputes_submission ON oracle_disputes(submission_id);
+      CREATE INDEX IF NOT EXISTS idx_oracle_disputes_market ON oracle_disputes(market_id);
     `,
   },
 ];
@@ -580,6 +563,55 @@ export const db = {
   },
 
   /**
+   * Persist an unprocessable ledger event in the dead-letter queue so it is
+   * never lost across restarts or deployments.
+   * Uses pool.query — safe to call outside of init().
+   *
+   * @param {object} entry
+   * @param {number} [entry.ledger_sequence] - Ledger the event came from.
+   * @param {string} [entry.tx_hash]         - Transaction hash (max 64 chars).
+   * @param {string} [entry.topic]           - Event topic (max 128 chars).
+   * @param {*}      [entry.payload]         - Raw event payload (stored as JSONB).
+   * @param {string} [entry.error_message]   - Why the event could not be processed.
+   * @returns {Promise<number>} The id of the inserted dlq_events row.
+   */
+  async insertDlqEvent({ ledger_sequence, tx_hash, topic, payload, error_message } = {}) {
+    const { rows } = await pool.query(
+      `INSERT INTO dlq_events (ledger_sequence, tx_hash, topic, payload, error_message)
+       VALUES ($1,$2,$3,$4,$5)
+       RETURNING id`,
+      [
+        ledger_sequence ?? null,
+        tx_hash ?? null,
+        topic ?? null,
+        payload === undefined ? null : JSON.stringify(payload),
+        error_message ?? null,
+      ]
+    );
+    return rows[0].id;
+  },
+
+  /**
+   * Record a retry attempt for a dead-lettered event by incrementing
+   * retry_count and refreshing created_at.
+   * Uses pool.query — safe to call outside of init().
+   *
+   * @param {number} id - The dlq_events row id.
+   * @returns {Promise<object|null>} The updated row, or null if not found.
+   */
+  async retryDlqEvent(id) {
+    const { rows } = await pool.query(
+      `UPDATE dlq_events
+       SET retry_count = COALESCE(retry_count, 0) + 1,
+           created_at  = NOW()
+       WHERE id = $1
+       RETURNING *`,
+      [id]
+    );
+    return rows[0] ?? null;
+  },
+
+  /**
    * Read the persisted indexer cursor from the indexer_state table.
    * Uses pool.query — safe to call outside of init().
    * @returns {Promise<number|null>} The last successfully indexed ledger, or null.
@@ -615,233 +647,144 @@ export const db = {
     );
   },
 
+  // ── Oracle & Markets ────────────────────────────────────────────────────────
+
   /**
-   * Update a user's balance for a specific contract.
-   * Creates a new record if it doesn't exist, otherwise updates the balance.
+   * Insert or update a market record.
    * Uses pool.query — safe to call outside of init().
    *
-   * @param {string} address - User's Stellar address
-   * @param {string} contractId - Contract address
-   * @param {string|number} balance - New balance amount
+   * @param {object} market
+   * @param {string} market.id - Market identifier
+   * @param {string} market.contract_id - Contract address
+   * @param {string} market.oracle_state - Oracle state (pending, submitted, disputed, finalized)
+   * @param {string} [market.outcome] - Optional outcome value
    * @returns {Promise<void>}
    */
-  async upsertUserBalance(address, contractId, balance) {
+  async upsertMarket(market) {
     await pool.query(
-      `INSERT INTO user_balances (address, contract_id, balance, updated_at)
-       VALUES ($1, $2, $3, NOW())
-       ON CONFLICT (address, contract_id)
-       DO UPDATE SET balance = $3, updated_at = NOW()`,
-      [address, contractId, String(balance)]
+      `INSERT INTO markets (id, contract_id, oracle_state, outcome, updated_at)
+       VALUES ($1, $2, $3, $4, NOW())
+       ON CONFLICT (id) DO UPDATE SET 
+         oracle_state = $3,
+         outcome = $4,
+         updated_at = NOW()`,
+      [market.id, market.contract_id, market.oracle_state, market.outcome ?? null]
     );
   },
 
   /**
-   * Get a user's balance for a specific contract.
+   * Get market by ID.
    * Uses pool.query — safe to call outside of init().
    *
-   * @param {string} address - User's Stellar address
-   * @param {string} contractId - Contract address
-   * @returns {Promise<string|null>} The balance as a string, or null if not found
+   * @param {string} marketId
+   * @returns {Promise<object|null>}
    */
-  async getUserBalance(address, contractId) {
-    const { rows } = await pool.query(
-      "SELECT balance FROM user_balances WHERE address = $1 AND contract_id = $2",
-      [address, contractId]
-    );
-    return rows[0]?.balance ?? null;
+  async getMarket(marketId) {
+    const { rows } = await pool.query("SELECT * FROM markets WHERE id = $1", [marketId]);
+    return rows[0] ?? null;
   },
 
   /**
-   * Record a claim event.
+   * Insert an oracle submission record.
    * Uses pool.query — safe to call outside of init().
    *
-   * @param {object} claim
-   * @param {string} claim.address - User's Stellar address
-   * @param {string} claim.contractId - Contract address
-   * @param {string} [claim.marketId] - Optional market identifier
-   * @param {string|number} claim.amount - Claim amount
-   * @param {string} [claim.status='completed'] - Claim status
-   * @param {number} [claim.eventSeq] - Associated event sequence number
-   * @param {number} claim.ledger - Ledger number
-   * @param {string} [claim.txHash] - Transaction hash
-   * @returns {Promise<number>} The inserted claim id
+   * @param {object} submission
+   * @param {string} submission.market_id - Market identifier
+   * @param {string} submission.submitter - Submitter address
+   * @param {string} submission.outcome - Submitted outcome
+   * @param {number} submission.ledger - Ledger number
+   * @param {string} [submission.tx_hash] - Transaction hash
+   * @param {string} [submission.status] - Status (pending, disputed, finalized)
+   * @returns {Promise<number>} The inserted submission ID
    */
-  async insertClaim({ address, contractId, marketId, amount, status = 'completed', eventSeq, ledger, txHash }) {
+  async insertOracleSubmission(submission) {
     const { rows } = await pool.query(
-      `INSERT INTO claims (address, contract_id, market_id, amount, status, event_seq, ledger, tx_hash, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
+      `INSERT INTO oracle_submissions (market_id, submitter, outcome, ledger, tx_hash, status, timestamp)
+       VALUES ($1, $2, $3, $4, $5, $6, NOW())
        RETURNING id`,
-      [address, contractId, marketId ?? null, String(amount), status, eventSeq ?? null, ledger, txHash ?? null]
+      [
+        submission.market_id,
+        submission.submitter,
+        submission.outcome,
+        submission.ledger,
+        submission.tx_hash ?? null,
+        submission.status ?? "pending",
+      ]
     );
     return rows[0].id;
   },
 
   /**
-   * Update the status of a claim.
+   * Update oracle submission status.
    * Uses pool.query — safe to call outside of init().
    *
-   * @param {number} claimId - The claim id
-   * @param {string} status - New status
+   * @param {number} submissionId
+   * @param {string} status
    * @returns {Promise<void>}
    */
-  async updateClaimStatus(claimId, status) {
+  async updateOracleSubmissionStatus(submissionId, status) {
     await pool.query(
-      "UPDATE claims SET status = $1, updated_at = NOW() WHERE id = $2",
-      [status, claimId]
+      `UPDATE oracle_submissions SET status = $1 WHERE id = $2`,
+      [status, submissionId]
     );
   },
 
   /**
-   * Get claims for a specific address.
+   * Get the most recent oracle submission for a market.
    * Uses pool.query — safe to call outside of init().
    *
-   * @param {string} address - User's Stellar address
-   * @param {object} [opts]
-   * @param {number} [opts.page=1] - Page number
-   * @param {number} [opts.limit=25] - Results per page
-   * @returns {Promise<{ claims: Array, total: number, page: number, limit: number }>}
+   * @param {string} marketId
+   * @returns {Promise<object|null>}
    */
-  async getClaims(address, { page = 1, limit = 25 } = {}) {
-    const pageNum = Number(page) || 1;
-    const limitNum = Math.min(MAX_PAGE, Number(limit) || 25);
-    const offset = (pageNum - 1) * limitNum;
-
-    const countRes = await pool.query(
-      "SELECT COUNT(*) FROM claims WHERE address = $1",
-      [address]
-    );
-    const total = parseInt(countRes.rows[0].count, 10);
-
+  async getLatestOracleSubmission(marketId) {
     const { rows } = await pool.query(
-      "SELECT * FROM claims WHERE address = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3",
-      [address, limitNum, offset]
+      `SELECT * FROM oracle_submissions 
+       WHERE market_id = $1 
+       ORDER BY ledger DESC, id DESC 
+       LIMIT 1`,
+      [marketId]
     );
-
-    return { claims: rows, total, page: pageNum, limit: limitNum };
+    return rows[0] ?? null;
   },
 
   /**
-   * Record a fee withdrawal event.
+   * Insert an oracle dispute record.
    * Uses pool.query — safe to call outside of init().
    *
-   * @param {object} fee
-   * @param {string} fee.address - User's Stellar address
-   * @param {string} fee.contractId - Contract address
-   * @param {string} fee.feeType - Type of fee (e.g., 'protocol', 'withdraw', 'trade')
-   * @param {string|number} fee.amount - Fee amount
-   * @param {number} [fee.eventSeq] - Associated event sequence number
-   * @param {number} fee.ledger - Ledger number
-   * @param {string} [fee.txHash] - Transaction hash
-   * @returns {Promise<number>} The inserted fee id
+   * @param {object} dispute
+   * @param {number} dispute.submission_id - Submission being disputed
+   * @param {string} dispute.market_id - Market identifier
+   * @param {string} dispute.disputer - Disputer address
+   * @param {string} [dispute.reason] - Dispute reason
+   * @param {number} dispute.ledger - Ledger number
+   * @param {string} [dispute.tx_hash] - Transaction hash
+   * @returns {Promise<number>} The inserted dispute ID
    */
-  async insertFee({ address, contractId, feeType, amount, eventSeq, ledger, txHash }) {
+  async insertOracleDispute(dispute) {
     const { rows } = await pool.query(
-      `INSERT INTO fees (address, contract_id, fee_type, amount, event_seq, ledger, tx_hash, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+      `INSERT INTO oracle_disputes (submission_id, market_id, disputer, reason, ledger, tx_hash, timestamp)
+       VALUES ($1, $2, $3, $4, $5, $6, NOW())
        RETURNING id`,
-      [address, contractId, feeType, String(amount), eventSeq ?? null, ledger, txHash ?? null]
+      [
+        dispute.submission_id,
+        dispute.market_id,
+        dispute.disputer,
+        dispute.reason ?? null,
+        dispute.ledger,
+        dispute.tx_hash ?? null,
+      ]
     );
     return rows[0].id;
   },
 
   /**
-   * Get fees for a specific address.
-   * Uses pool.query — safe to call outside of init().
-   *
-   * @param {string} address - User's Stellar address
-   * @param {object} [opts]
-   * @param {number} [opts.page=1] - Page number
-   * @param {number} [opts.limit=25] - Results per page
-   * @returns {Promise<{ fees: Array, total: number, page: number, limit: number }>}
+   * Execute a raw query (for testing or advanced use).
+   * @param {string} text
+   * @param {Array} [params]
+   * @returns {Promise<object>}
    */
-  async getFees(address, { page = 1, limit = 25 } = {}) {
-    const pageNum = Number(page) || 1;
-    const limitNum = Math.min(MAX_PAGE, Number(limit) || 25);
-    const offset = (pageNum - 1) * limitNum;
-
-    const countRes = await pool.query(
-      "SELECT COUNT(*) FROM fees WHERE address = $1",
-      [address]
-    );
-    const total = parseInt(countRes.rows[0].count, 10);
-
-    const { rows } = await pool.query(
-      "SELECT * FROM fees WHERE address = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3",
-      [address, limitNum, offset]
-    );
-
-    return { fees: rows, total, page: pageNum, limit: limitNum };
-  },
-
-  /**
-   * Record a reward points event.
-   * Uses pool.query — safe to call outside of init().
-   *
-   * @param {object} reward
-   * @param {string} reward.address - User's Stellar address
-   * @param {string} reward.contractId - Contract address
-   * @param {string|number} reward.points - Reward points amount
-   * @param {string} [reward.reason] - Reason for reward
-   * @param {number} [reward.eventSeq] - Associated event sequence number
-   * @param {number} reward.ledger - Ledger number
-   * @param {string} [reward.txHash] - Transaction hash
-   * @returns {Promise<number>} The inserted reward id
-   */
-  async insertReward({ address, contractId, points, reason, eventSeq, ledger, txHash }) {
-    const { rows } = await pool.query(
-      `INSERT INTO rewards (address, contract_id, points, reason, event_seq, ledger, tx_hash, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
-       RETURNING id`,
-      [address, contractId, String(points), reason ?? null, eventSeq ?? null, ledger, txHash ?? null]
-    );
-    return rows[0].id;
-  },
-
-  /**
-   * Get rewards for a specific address.
-   * Uses pool.query — safe to call outside of init().
-   *
-   * @param {string} address - User's Stellar address
-   * @param {object} [opts]
-   * @param {number} [opts.page=1] - Page number
-   * @param {number} [opts.limit=25] - Results per page
-   * @returns {Promise<{ rewards: Array, total: number, page: number, limit: number }>}
-   */
-  async getRewards(address, { page = 1, limit = 25 } = {}) {
-    const pageNum = Number(page) || 1;
-    const limitNum = Math.min(MAX_PAGE, Number(limit) || 25);
-    const offset = (pageNum - 1) * limitNum;
-
-    const countRes = await pool.query(
-      "SELECT COUNT(*) FROM rewards WHERE address = $1",
-      [address]
-    );
-    const total = parseInt(countRes.rows[0].count, 10);
-
-    const { rows } = await pool.query(
-      "SELECT * FROM rewards WHERE address = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3",
-      [address, limitNum, offset]
-    );
-
-    return { rewards: rows, total, page: pageNum, limit: limitNum };
-  },
-
-  /**
-   * Get total reward points for an address and contract.
-   * Uses pool.query — safe to call outside of init().
-   *
-   * @param {string} address - User's Stellar address
-   * @param {string} contractId - Contract address
-   * @returns {Promise<string>} Total points as a string
-   */
-  async getTotalRewardPoints(address, contractId) {
-    const { rows } = await pool.query(
-      `SELECT COALESCE(SUM(points), 0)::TEXT as total
-       FROM rewards
-       WHERE address = $1 AND contract_id = $2`,
-      [address, contractId]
-    );
-    return rows[0]?.total ?? "0";
+  async query(text, params) {
+    return pool.query(text, params);
   },
 };
 
