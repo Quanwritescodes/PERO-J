@@ -1013,6 +1013,8 @@ Issue [#118](../../issues/118) — Contract admin key management
 
 ### Documentation
 
+- Auto-update CHANGELOG.md [skip ci] ([`69c3c67`](../../commit/69c3c6704120dcb838402b0c4d8d7027a9a9004b))
+
 - Auto-update CHANGELOG.md [skip ci] ([`1ce17cb`](../../commit/1ce17cb5d0ae11f1f73526c883b9d464f7db70c8))
 
 - Auto-update CHANGELOG.md [skip ci] ([`bd9e6f6`](../../commit/bd9e6f6ae1e2344c9ef40279b9aa8acdfda9da3c))
@@ -1560,6 +1562,19 @@ Add hourly quorum checks and PagerDuty escalation at 24h, 48h, and 60h. Resolve 
 - Add dedicated dispute_votes table and aggregation queries ([`3c0cebd`](../../commit/3c0cebd713b5220ac364ff611849691170d28dfe))
 
 - Add oracle submitter portal and participation interface ([`4d1c395`](../../commit/4d1c395eedb2ff37ed616c6b8a21e582911020c3))
+
+- Wire orphaned handlers for claim, fee_withdrawn, and reward_points ([`7679e7d`](../../commit/7679e7da76b1f4458562d38f74ed101d7df91ad3))
+
+- Add database migration [#7](../../issues/7) for user_balances, claims, fees, and rewards tables
+  - Implement handleClaim, handleFeeWithdrawn, and handleRewardPoints
+  - Add 10 new database methods for CRUD operations on new tables
+  - Wire handlers into event processing loop with error isolation
+  - Add human-readable descriptions for new event types
+  - Create comprehensive integration test suite
+  - Add handler documentation and implementation guide
+
+  Resolves [#931](../../issues/931)
+
 
 - Configure database pool size ([`df7e5bb`](../../commit/df7e5bbd7b70c022f583f715bd716993b77d7f55))
 
