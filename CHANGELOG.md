@@ -1013,6 +1013,8 @@ Issue [#118](../../issues/118) — Contract admin key management
 
 ### Documentation
 
+- Auto-update CHANGELOG.md [skip ci] ([`f3c9872`](../../commit/f3c98723126b98f9bea71de5a7d3f4209c061e2b))
+
 - Auto-update CHANGELOG.md [skip ci] ([`12ebff1`](../../commit/12ebff19105220c7724abb8d8567796784d54021))
 
 - Auto-update CHANGELOG.md [skip ci] ([`cb31d0a`](../../commit/cb31d0afd879d895594f0c2583e90834679a6b45))
@@ -1971,6 +1973,11 @@ Add a tests/integration/ directory with stub tests that document the
 - Implement CORS and security headers policy (CSP, HSTS, X-Frame-Options) ([#1032](../../issues/1032)) ([`62bdf45`](../../commit/62bdf450f99204761e6218b770a647f4c488c8d1))
 
 - Add slippage protection for user bets placed during rapid odds fluctuations ([#1033](../../issues/1033)) ([`b995e72`](../../commit/b995e72c0bec4bae057aa5201919628bfa286c1f))
+
+
+### Simple
+
+- Batch fix 2 issues ([`390edc7`](../../commit/390edc779477f721026317308d512239d695f4bc))
 
 
 
