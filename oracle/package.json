@@ -1,5 +1,8 @@
 {
-  "name": "pero-j-oracle",
+  "name": "peroj-oracle-adapters",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  }
 }
